@@ -1,0 +1,122 @@
+# cloudbuild.yaml
+# -------------------------------
+# Diese Konfiguration wird von Cloud Build ausgeführt, sobald dein Trigger
+# (bei Push auf den Branch, z. B. main) feuert.
+#
+# Pipeline:
+# 1) Docker-Image der Flask-App bauen
+# 2) Image in Artifact Registry pushen
+# 3) Image als Cloud Run Service "transcoder-app" deployen
+#
+# Es werden Substitutionsvariablen verwendet für:
+# - _REGION       -> Region für Artifact Registry & Cloud Run
+# - _BUCKET_NAME  -> Name deines GCS-Buckets
+# - _REPO_NAME    -> Name deines Artifact-Registry-Repos
+
+steps:
+  # ---------------------------------------------------
+  # 1. Docker-Image bauen
+  #    - Verwendet den offiziellen Docker-Builder von Cloud Build
+  #    - Build-Kontext: ./flask-app (dort liegt Dockerfile + App)
+  #    - Tag des Images enthält:
+  #        REGION-docker.pkg.dev/PROJECT_ID/REPO_NAME/transcoder-app:COMMIT_SHA
+  # ---------------------------------------------------
+  - id: "Docker Build"
+    name: "gcr.io/cloud-builders/docker"
+    args:
+      # docker build -t <IMAGE_TAG> ./flask-app
+      - "build"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/transcoder-app:$COMMIT_SHA"
+      - "./flask-app"
+
+  # ---------------------------------------------------
+  # 2. Docker-Image in Artifact Registry pushen
+  #    - Verwendet ebenfalls den Docker-Builder
+  #    - Push auf genau den gleichen Image-Tag wie in Schritt 1
+  # ---------------------------------------------------
+  - id: "Docker Push"
+    name: "gcr.io/cloud-builders/docker"
+    args:
+      # docker push <IMAGE_TAG>
+      - "push"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/transcoder-app:$COMMIT_SHA"
+
+  # ---------------------------------------------------
+  # 3. Deployment auf Cloud Run
+  #    - Verwendet das gcloud-SDK Image
+  #    - Service-Name: transcoder-app
+  #    - Image: das gerade gepushte Artifact-Registry-Image
+  #    - Region: aus der Substitution _REGION
+  #    - Platform: managed (voll gemanagter Cloud Run)
+  #    - Unauthenticated erlaubt: damit du die URL im Browser testen kannst
+  #    - Umgebungsvariablen:
+  #        BUCKET_NAME -> dein GCS-Bucket mit bbb.mp4
+  #        PROJECT_ID  -> GCP-Projekt (von Cloud Build automatisch gesetzt)
+  #        REGION      -> Region (z. B. us-central1)
+  # ---------------------------------------------------
+  - id: "Cloud Run Deployment"
+    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: "gcloud"
+    args:
+      # Basis-Kommando: gcloud run deploy transcoder-app ...
+      - "run"
+      - "deploy"
+      - "transcoder-app"  # Service-Name
+
+      # --image = genau das Image aus Schritt 1+2
+      - "--image"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/transcoder-app:$COMMIT_SHA"
+
+      # Region aus Substitution
+      - "--region"
+      - "${_REGION}"
+
+      # Voll gemanagter Cloud Run
+      - "--platform"
+      - "managed"
+
+      # Unauthenticated Access erlauben => URL direkt im Browser aufrufbar
+      - "--allow-unauthenticated"
+
+      # Environment-Variablen für die Flask-App
+      # BUCKET_NAME: Name deines GCS-Buckets
+      # PROJECT_ID : Projekt-ID (Cloud Build setzt $PROJECT_ID automatisch)
+      # REGION     : selbe Region wie Cloud Run / Transcoder
+      - "--set-env-vars"
+      - "BUCKET_NAME=${_BUCKET_NAME},PROJECT_ID=$PROJECT_ID,REGION=${_REGION}"
+
+# ---------------------------------------------------
+# Die im Build erzeugten Images, die als Ergebnis publiziert werden sollen.
+# Diese können in der Cloud Build UI angezeigt und u. U. von anderen Schritten reused werden.
+# ---------------------------------------------------
+images:
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO_NAME}/transcoder-app:$COMMIT_SHA"
+
+# ---------------------------------------------------
+# Build-Optionen
+# - logging: CLOUD_LOGGING_ONLY   -> logs gehen nur in Cloud Logging
+# ---------------------------------------------------
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+# ---------------------------------------------------
+# Substitution-Variablen
+# - _REGION      : Region für Artifact Registry & Cloud Run (im Versuch: us-central1)
+# - _BUCKET_NAME : dein GCS-Bucket (Standardklasse, us-central1, öffentlich + bbb.mp4)
+# - _REPO_NAME   : Name deines Artifact-Registry-Repos (im Versuch: transcoder-repo)
+#
+# Diese Werte kannst du bei Bedarf in der Cloud Build UI auch überschreiben,
+# z. B. wenn du irgendwann eine andere Region oder ein anderes Repo verwenden willst.
+# ---------------------------------------------------
+substitutions:
+  _REGION: "us-central1"
+  _BUCKET_NAME: "mmn-lab-3" 
+  _REPO_NAME: "transcoder-repo"
+
+# ---------------------------------------------------
+# Timeout für den gesamten Build
+# - Format: "<Sekunden>s"
+# - 600 Sekunden = 10 Minuten
+# ---------------------------------------------------
+timeout: "600s"
